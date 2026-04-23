@@ -277,7 +277,11 @@ export class Storage {
       mergePromise.finally(() => this.mergeStreamPromises.delete(mergePromise))
 
       this.pumpPartsToStreams(storageLocation, responseStream, mergerStream).catch((err) => {
-        responseStream.destroy(err)
+        // pumpPartsToStreams now tolerates a mid-stream client abort on its own,
+        // so reaching this catch means something actually broke (part missing,
+        // merger write failed, etc.). Tear both streams down — the merge
+        // promise's own .catch will reset mergedAt/mergeStartedAt.
+        if (!responseStream.destroyed) responseStream.destroy(err)
         mergerStream.destroy(err)
         if (err instanceof ObjectNotFoundError)
           logger.warn(`Stale cache entry ${cacheEntryId}: ${err.message}`)
@@ -314,14 +318,28 @@ export class Storage {
     if (location.partsDeletedAt) throw new Error('No parts to feed')
 
     for await (const chunk of this.streamParts(location)) {
-      const responseWantsMore = responseStream.write(chunk)
-      const mergerWantsMore = mergerStream.write(chunk)
+      // The response is best-effort: if the client disconnects mid-download we
+      // stop feeding it but keep feeding the merger so the merged blob still
+      // lands. Otherwise a transient client abort leaves the entry permanently
+      // unmerged, which triggers an endless retry-and-fail loop on the next GET.
+      if (!responseStream.destroyed) {
+        try {
+          const responseWantsMore = responseStream.write(chunk)
+          if (!responseWantsMore && !responseStream.destroyed) {
+            await once(responseStream, 'drain')
+          }
+        } catch {
+          // Client went away while we were waiting for drain. Swallow and fall
+          // through to the merger write — errors on the merger side will still
+          // propagate and roll back mergedAt/mergeStartedAt via the outer catch.
+        }
+      }
 
-      if (!responseWantsMore) await once(responseStream, 'drain')
+      const mergerWantsMore = mergerStream.write(chunk)
       if (!mergerWantsMore) await once(mergerStream, 'drain')
     }
 
-    responseStream.end()
+    if (!responseStream.destroyed) responseStream.end()
     mergerStream.end()
 
     await globalThis.gc?.()
