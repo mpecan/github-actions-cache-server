@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       tag-suffix:
-        description: "Optional extra tag suffix (appended after the short sha)"
+        description: Optional extra tag suffix (appended after the short sha)
         required: false
-        default: ""
+        default: ''
 
 concurrency:
   group: preview-build-${{ github.ref }}

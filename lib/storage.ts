@@ -574,7 +574,15 @@ class S3Adapter implements StorageAdapter {
       region: env.AWS_REGION,
       requestHandler: new NodeHttpHandler({
         httpsAgent: agent,
-        socketTimeout: 3000,
+        // 3s (the prior value) is an aggressive no-data-on-socket timeout that
+        // self-hosted S3 implementations (Garage, MinIO) routinely blow past
+        // on a single DeleteObjects of several hundred keys — and the SDK's
+        // default 3 retries keep the whole operation well under 10s, so
+        // cleanup:uploads on any folder with a BuildKit-sized partCount
+        // TimeoutErrors, rolls the transaction back, keeps the row, and loops
+        // on the next tick. 30s is closer to the AWS SDK default and still
+        // well short of the 60s cleanup:uploads cadence.
+        socketTimeout: 30_000,
       }),
     })
 
